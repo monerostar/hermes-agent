@@ -8,6 +8,7 @@ import {
   $todosBySession,
   clearActiveSessionTodos,
   clearSessionTodos,
+  dismissRetainedTodos,
   restoreSessionTodosFromSnapshot,
   setSessionTodos,
   todosForHydration
@@ -179,5 +180,49 @@ describe('revisioned snapshots', () => {
 
     setSessionTodos('s1', [todo('a', 'in_progress')])
     expect($todosBySession.get().s1?.[0]?.id).toBe('a')
+  })
+})
+
+describe('retained checklist dismissal (#127429)', () => {
+  const settled = { revision: 3, todos: [todo('a', 'completed'), todo('b', 'completed')] }
+
+  beforeEach(() => {
+    window.localStorage.clear()
+  })
+
+  afterEach(() => {
+    clearSessionTodos('s1')
+    window.localStorage.clear()
+  })
+
+  it('keeps a dismissed checklist hidden when the same snapshot rehydrates', () => {
+    restoreSessionTodosFromSnapshot('s1', settled, false)
+
+    expect($retainedTodosBySession.get().s1).toHaveLength(2)
+
+    dismissRetainedTodos('s1')
+
+    expect($retainedTodosBySession.get().s1).toBeUndefined()
+
+    // A reopen, roster refresh or reload re-derives the same snapshot from
+    // immutable stored history. Without a persisted revision gate that is
+    // exactly where the dismissed list used to come back (#127429).
+    clearSessionTodos('s1')
+    restoreSessionTodosFromSnapshot('s1', settled, false)
+
+    expect($retainedTodosBySession.get().s1).toBeUndefined()
+  })
+
+  it('re-arms the section when the agent writes a newer revision', () => {
+    restoreSessionTodosFromSnapshot('s1', settled, false)
+    dismissRetainedTodos('s1')
+
+    restoreSessionTodosFromSnapshot(
+      's1',
+      { revision: 4, todos: [todo('a', 'completed'), todo('b', 'in_progress')] },
+      false
+    )
+
+    expect($retainedTodosBySession.get().s1).toHaveLength(2)
   })
 })

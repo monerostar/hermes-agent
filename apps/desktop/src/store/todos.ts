@@ -4,6 +4,7 @@ import { keyedTimeouts } from '@/lib/keyed-timeouts'
 import { stableRecord } from '@/lib/stable-array'
 import { parseTodoRevision, parseTodos, type TodoItem } from '@/lib/todos'
 
+import { dismissedRetainedRevision, rememberRetainedDismissal } from './retained-todo-dismissals'
 import { $sessions, lineageAliases } from './session'
 import { $sessionStates } from './session-states'
 
@@ -98,10 +99,30 @@ function acceptRevision(sid: string, revision?: null | number): boolean {
   return true
 }
 
-function retainSessionTodos(sid: string, todos: TodoItem[]) {
+/** Durable identities this runtime's list belongs to. The same projection the
+ *  sidebar cards use, so a dismissal recorded from any surface survives the
+ *  remount, compression and branching that change the runtime id. */
+function retainedScope(sid: string): string[] {
+  const stored = $sessionStates.get()[sid]?.storedSessionId
+
+  return lineageAliases(stored ?? sid, $sessions.get())
+}
+
+function retainSessionTodos(sid: string, todos: TodoItem[], revision?: null | number) {
   const current = $retainedTodosBySession.get()
 
   if (todos.length) {
+    // Rehydration re-derives a settled list from stored history forever, so a
+    // user dismissal is honoured by revision, not by clearing: the dismissed
+    // revision stays hidden, a newer one re-arms the section (#127429).
+    if (revision != null) {
+      const dismissed = dismissedRetainedRevision(retainedScope(sid))
+
+      if (dismissed !== null && revision <= dismissed) {
+        return
+      }
+    }
+
     $retainedTodosBySession.set({ ...current, [sid]: todos })
   } else if (sid in current) {
     const { [sid]: _drop, ...rest } = current
@@ -120,7 +141,7 @@ export function setSessionTodos(sid: string, todos: TodoItem[], revision?: null 
 
   // An unversioned tool.start is optimistic, not a durable result.
   if (revision != null) {
-    retainSessionTodos(sid, todos)
+    retainSessionTodos(sid, todos, revision)
   }
 
   clearTimers.cancel(sid)
@@ -155,6 +176,24 @@ function dropSessionTodos(sid: string, forgetRevision: boolean) {
 
 export function clearSessionTodos(sid: string) {
   dropSessionTodos(sid, true)
+}
+
+/** Hide this session's retained checklist until the agent writes a strictly
+ *  newer todo revision. Persisted, so the roster refresh and the next reload
+ *  do not resurrect what the user just cleared (issue #127429). */
+export function dismissRetainedTodos(sid: string) {
+  if (!sid) {
+    return
+  }
+
+  rememberRetainedDismissal(retainedScope(sid), $todoRevisionsBySession.get()[sid] ?? 0)
+
+  const current = $retainedTodosBySession.get()
+
+  if (sid in current) {
+    const { [sid]: _drop, ...rest } = current
+    $retainedTodosBySession.set(rest)
+  }
 }
 
 export function clearAllSessionTodos() {
@@ -209,7 +248,7 @@ export function restoreSessionTodosFromSnapshot(sid: string, snapshot: unknown, 
     setSessionTodos(sid, visible, revision)
   } else if (acceptRevision(sid, revision)) {
     if (revision != null) {
-      retainSessionTodos(sid, todos)
+      retainSessionTodos(sid, todos, revision)
     }
 
     dropSessionTodos(sid, false)
